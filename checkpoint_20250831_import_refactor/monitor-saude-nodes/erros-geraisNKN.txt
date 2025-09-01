@@ -1,0 +1,190 @@
+Guia Completo de Logs e Erros do NKN
+Visão Geral
+O NKN (New Kind of Network) gera diversos logs e mensagens durante sua operação. Este guia detalha as principais mensagens de erro, alertas e códigos de saída que podem aparecer nos logs do nó NKN.
+Estrutura de Logs
+Após o nknd iniciar, ele cria dois diretórios: ChainDB para armazenar dados da blockchain, e Log para armazenar logs. Por padrão, o nknd cria esses diretórios no diretório de trabalho atual, mas isso pode ser alterado passando argumentos --chaindb e --log para o nknd.
+Requisitos de Porta (Port Requirements)
+Portas Obrigatórias
+Se seu roteador não suportar tal protocolo, você deve configurar o redirecionamento de porta no seu roteador para a porta 30001, bem como todas as outras portas especificadas no config.json (30001-30005 por padrão), caso contrário outros nós não poderão estabelecer conexões com você e você NÃO poderá ganhar recompensas de mineração
+Configuração Padrão de Portas:
+
+Porta Principal: 30001
+Faixa Padrão: 30001-30005
+TestNet: 30001-30003
+Interface Web: 30000 (se habilitada)
+
+Mensagens Relacionadas a Portas:
+
+"No NAT gateway detected, skip automatic port forwarding": Indica que o nó não conseguiu detectar um gateway NAT para redirecionamento automático de portas
+"Port forwarding failed": Falha na configuração automática de redirecionamento de portas
+"UPnP/NAT-PMP not supported": O roteador não suporta protocolos de redirecionamento automático
+
+Códigos de Saída (Exit Codes)
+Exit Code 1
+
+Significado: Erro geral da aplicação
+Causas Comuns:
+
+Falha na inicialização do nó
+Erro de configuração no config.json
+Problemas com a carteira (wallet.json)
+Falha na conexão com outros nós
+
+
+
+Exit Code 255
+
+Significado: Erro crítico do sistema ou falha na rede
+Causas Comuns:
+
+Falha crítica na sincronização da blockchain
+Erro de rede irrecuperável
+Corrupção de dados críticos
+Falha no processo de consenso
+
+
+
+Exit Code 0
+
+Significado: Encerramento normal/sucesso
+Quando Ocorre: Quando o nó é encerrado corretamente
+
+Mensagens de Log Comuns
+Mensagens INFO (Normais)
+Sincronização
+
+"Block syncing...": O nó está sincronizando blocos
+"Current block height: X": Altura atual do bloco sendo processado
+O nó está sincronizando blocos e este é um estágio necessário
+
+Conectividade
+
+"Connected to peer X.X.X.X:30001": Conexão estabelecida com outro nó
+"Discovering neighbors...": Descobrindo nós vizinhos
+"Node joined network": Nó ingressou com sucesso na rede
+
+Mensagens de AVISO (WARNING)
+Timeout e Conectividade
+
+"Wait reply timeout" - Esses avisos são principalmente para debug e podem ser ignorados com segurança
+"Connection timeout to peer": Timeout na conexão com outro nó
+"Peer disconnected": Desconexão de um nó vizinho
+
+Rede e Performance
+
+"Network congestion detected": Congestionamento da rede detectado
+"Low peer count": Número baixo de pares conectados
+"Sync lagging behind": Sincronização atrasada em relação à rede
+
+Mensagens de ERRO (ERROR)
+Erros de Configuração
+
+"Failed to load config.json": Falha ao carregar arquivo de configuração
+"Invalid wallet password": Senha da carteira incorreta
+"Wallet not found": Arquivo wallet.json não encontrado
+
+Erros de Rede
+
+"Failed to establish connection": Falha ao estabelecer conexão
+"Port binding failed": Falha ao vincular porta
+"NAT traversal failed": Falha na travessia NAT
+
+Erros de Blockchain
+
+"Block validation failed": Falha na validação do bloco
+"Transaction verification error": Erro na verificação de transação
+"Consensus timeout": Timeout no processo de consenso
+
+Problemas Específicos e Soluções
+1. Problemas de Conectividade
+Sintomas:
+
+Mensagens constantes de timeout
+Baixo número de pares conectados
+Não consegue sincronizar
+
+Soluções:
+
+Verificar se você tem um IP público ou configurar redirecionamento de porta
+Verificar configurações de firewall
+Confirmar que as portas 30001-30005 estão abertas
+
+2. Falhas de Sincronização
+Sintomas:
+
+Exit code 1 durante a sincronização
+Mensagens de erro de validação de bloco
+Altura do bloco não aumenta
+
+Soluções:
+
+Verificar espaço em disco disponível
+Recriar o diretório ChainDB se corrompido
+Verificar conectividade de rede
+
+3. Problemas de Carteira
+Sintomas:
+
+Erro ao carregar wallet.json
+Problemas de autenticação
+Exit code 1 na inicialização
+
+Soluções:
+
+Cada nó precisa usar uma carteira única. Se você compartilhar carteira entre múltiplos nós, apenas um deles poderá ingressar na rede!
+Verificar se o arquivo wallet.json existe
+Confirmar que a senha está correta
+
+Monitoramento e Diagnóstico
+Verificação de Status
+
+Você pode usar http://nstatus.org para verificar o status do seu nó
+Um nó em execução deve estar acessível pelas portas 30001, 30002 e 30003
+
+Comandos Úteis
+bash# Verificar saldo da carteira
+./nknc wallet -l balance
+
+# Verificar informações do nó (Docker)
+docker exec -it nkn nknc wallet -l balance
+
+# Ver logs em tempo real
+tail -f Log/nkn.log
+Indicadores de Nó Saudável
+
+Sincronização constante de blocos
+Número estável de pares conectados (>= 8)
+Ausência de erros críticos nos logs
+Porta 30001 acessível externamente
+
+Configurações Importantes
+Docker
+bash# Para interface web externa
+-p 30000-30005:30000-30005
+
+# Configuração padrão
+-p 30001-30005:30001-30005
+Config.json
+
+Verificar portas corretas (30001-30005)
+Configurar BeneficiaryAddr para segurança
+Definir NAT: false se necessário
+
+Resolução de Problemas Avançados
+Logs Detalhados
+
+Ativar modo debug no config.json
+Monitorar logs em tempo real
+Verificar logs do sistema operacional
+
+Performance
+
+Monitorar uso de CPU e memória
+Verificar velocidade de sincronização
+Acompanhar latência de rede
+
+Segurança
+
+Usar BeneficiaryAddr para tokens
+Manter backups da carteira
+Monitorar tentativas de conexão suspeitas

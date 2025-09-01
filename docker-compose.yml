@@ -1,0 +1,58 @@
+services:
+  nginx:
+    image: nginx:latest
+    container_name: nodemon-proxy
+    ports:
+      - "8000:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+    networks:
+      - nodemon-net
+    depends_on:
+      - backend
+      - frontend
+
+  backend:
+    build: ./backend
+    container_name: nodemon-backend
+    env_file:
+      - ./backend/.env
+    networks:
+      - nodemon-net
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    container_name: nodemon-frontend
+    env_file:
+      - ./frontend/.env
+    networks:
+      - nodemon-net
+    depends_on:
+      - backend
+
+  db:
+    image: postgres:13
+    container_name: nodemon-db
+    environment:
+      POSTGRES_DB: nodemon_db
+      POSTGRES_USER: nodemon_user
+      POSTGRES_PASSWORD: Luftcia125@@
+    volumes:
+      - postgres_data:/var/lib/postgresql/data/
+    networks:
+      - nodemon-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U nodemon_user -d nodemon_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
+
+networks:
+  nodemon-net:
+    driver: bridge
