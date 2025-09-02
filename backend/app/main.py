@@ -600,7 +600,13 @@ def ssh_connect(node_ip: str, creds: SshCredentials):
 @app.get("/debug/websocket-test")
 async def websocket_test():
     """Debug endpoint to test if WebSocket support is available"""
-    return {"message": "WebSocket support available", "status": "ok"}
+    import websockets
+    return {
+        "message": "WebSocket support available", 
+        "status": "ok",
+        "websockets_version": websockets.version.version if hasattr(websockets, 'version') else "installed",
+        "uvicorn_info": "uvicorn[standard] with WebSocket support"
+    }
 
 @app.websocket("/ws/ssh/{node_ip}")
 async def websocket_ssh_endpoint(websocket: WebSocket, node_ip: str):
@@ -616,19 +622,22 @@ async def websocket_ssh_endpoint(websocket: WebSocket, node_ip: str):
     try:
         auth_timeout = 10  # 10 seconds timeout for auth
         auth_message = await asyncio.wait_for(websocket.receive_text(), timeout=auth_timeout)
+        logging.info(f"Received auth message: {auth_message[:50]}...")  # Log first 50 chars
         
         try:
             auth_data = json.loads(auth_message)
             if auth_data.get('type') != 'auth':
+                logging.error(f"Invalid auth message type: {auth_data.get('type')}")
                 raise ValueError("Invalid auth message type")
                 
             credentials = auth_data.get('credentials')
             if not credentials or not credentials.startswith('Basic '):
+                logging.error(f"Missing or invalid credentials in auth message")
                 raise ValueError("Missing or invalid credentials")
                 
         except (json.JSONDecodeError, ValueError) as e:
             logging.error(f"WebSocket auth message parsing error: {e}")
-            await websocket.send_text(f"\r\nERRO: Formato de autenticação inválido\r\n")
+            await websocket.send_text(f"\r\nERRO: Formato de autenticação inválido: {str(e)}\r\n")
             await websocket.close(code=1008)
             return
             
@@ -648,6 +657,8 @@ async def websocket_ssh_endpoint(websocket: WebSocket, node_ip: str):
                 return
                 
             logging.info(f"WebSocket authentication successful for user: {username}")
+            # Send authentication success message
+            await websocket.send_text(f"\r\nAutenticação bem-sucedida. Iniciando conexão SSH...\r\n")
         except Exception as e:
             logging.error(f"WebSocket credential validation error: {e}")
             await websocket.send_text(f"\r\nERRO: Falha na validação de credenciais\r\n")

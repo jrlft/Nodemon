@@ -10,6 +10,7 @@ const SshTerminal = ({ nodeIp, onDisconnect, credentials }) => {
     const fitAddonRef = useRef(null);
     const [connectionError, setConnectionError] = useState(null);
     const [isConnecting, setIsConnecting] = useState(true);
+    const [authStatus, setAuthStatus] = useState('connecting');
 
     const getWebSocketUrl = () => {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -23,13 +24,19 @@ const SshTerminal = ({ nodeIp, onDisconnect, credentials }) => {
         {
             onOpen: () => {
                 console.log('WebSocket connection established, sending auth...');
+                setAuthStatus('authenticating');
                 // Send authentication immediately after connection
                 if (credentials) {
                     const authMessage = JSON.stringify({
                         type: 'auth',
                         credentials: credentials
                     });
+                    console.log('Sending auth message:', authMessage);
                     sendMessage(authMessage);
+                } else {
+                    console.error('No credentials available for WebSocket auth');
+                    setConnectionError('Credenciais não disponíveis para autenticação');
+                    setAuthStatus('error');
                 }
             },
             onClose: (event) => {
@@ -95,11 +102,31 @@ const SshTerminal = ({ nodeIp, onDisconnect, credentials }) => {
     useEffect(() => {
         if (lastMessage !== null && xtermRef.current) {
             const data = lastMessage.data;
-            // Check if this is an authentication success indicator
-            if (data.includes('SSH') && !data.includes('ERRO')) {
+            
+            // Check if this is an authentication success message
+            if (data.includes('Autenticação bem-sucedida') || data.includes('Iniciando conexão SSH')) {
+                console.log('Authentication successful, SSH connecting...');
+                setAuthStatus('ssh-connecting');
                 setIsConnecting(false);
                 setConnectionError(null);
             }
+            
+            // Check if SSH connection is established (look for shell prompt or login messages)
+            if (data.includes('$') || data.includes('#') || data.includes('Welcome') || data.includes('login:')) {
+                console.log('SSH connection established successfully!');
+                setAuthStatus('connected');
+                setIsConnecting(false);
+                setConnectionError(null);
+            }
+            
+            // Check for error messages
+            if (data.includes('ERRO:')) {
+                console.error('SSH error received:', data);
+                setConnectionError('Erro de conexão SSH: Verifique as credenciais e conectividade.');
+                setIsConnecting(false);
+                setAuthStatus('error');
+            }
+            
             xtermRef.current.write(data);
         }
     }, [lastMessage]);
@@ -140,10 +167,18 @@ const SshTerminal = ({ nodeIp, onDisconnect, credentials }) => {
 
     // Show loading state
     if (isConnecting) {
+        const statusMessages = {
+            'connecting': 'Conectando ao WebSocket...',
+            'authenticating': 'Autenticando usuário...',
+            'ssh-connecting': 'Conectando ao servidor SSH...',
+            'error': 'Erro de conexão'
+        };
+        
         return (
             <div className="flex flex-col items-center justify-center h-full text-white">
                 <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mb-4"></div>
-                <p>Conectando ao servidor SSH...</p>
+                <p>{statusMessages[authStatus] || 'Conectando ao servidor SSH...'}</p>
+                <p className="text-sm text-gray-400 mt-2">Node: {nodeIp}</p>
             </div>
         );
     }
