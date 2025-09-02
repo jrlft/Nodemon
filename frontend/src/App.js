@@ -231,9 +231,13 @@ const SshModal = ({ isOpen, onClose, node, credentials }) => {
                 throw new Error(errorData.detail || 'Falha ao conectar.');
             }
 
-            setShowTerminal(true);
+            // Wait a moment for credentials to be saved before opening terminal
+            setTimeout(() => {
+                setShowTerminal(true);
+            }, 500);
 
         } catch (error) {
+            console.error('SSH connection error:', error);
             setErrorMessage(error.message);
         } finally {
             setIsConnecting(false);
@@ -269,7 +273,11 @@ const SshModal = ({ isOpen, onClose, node, credentials }) => {
 
                 <div className="flex-grow p-4 overflow-hidden">
                     {showTerminal ? (
-                        <SshTerminal nodeIp={node.ip_address} onDisconnect={handleDisconnect} />
+                        <SshTerminal 
+                            nodeIp={node.ip_address} 
+                            onDisconnect={handleDisconnect}
+                            credentials={credentials}
+                        />
                     ) : (
                         <div className="flex flex-col justify-center items-center h-full text-white">
                             <form onSubmit={handleConnect} className="w-full max-w-sm space-y-4">

@@ -18,6 +18,7 @@ import asyncio
 import aiohttp
 import smtplib
 import paramiko
+import socket
 from . import ssh_manager
 from email.mime.text import MIMEText
 from contextlib import asynccontextmanager
@@ -600,6 +601,37 @@ async def websocket_ssh_endpoint(websocket: WebSocket, node_ip: str):
     """
     Endpoint WebSocket para o terminal SSH interativo.
     """
+    # Check authorization from query parameters
+    try:
+        # Get authorization from query parameters
+        auth_header = websocket.query_params.get('authorization')
+        
+        # Basic authentication validation
+        if not auth_header or not auth_header.startswith('Basic '):
+            await websocket.close(code=1008, reason="Unauthorized: Missing authentication")
+            return
+            
+        # Validate credentials
+        import base64
+        try:
+            encoded_credentials = auth_header.split('Basic ')[1]
+            decoded_credentials = base64.b64decode(encoded_credentials).decode('utf-8')
+            username, password = decoded_credentials.split(':', 1)
+            
+            # Validate against admin credentials
+            if not (secrets.compare_digest(username, ADMIN_USERNAME) and 
+                   secrets.compare_digest(password, ADMIN_PASSWORD)):
+                await websocket.close(code=1008, reason="Unauthorized: Invalid credentials")
+                return
+        except Exception:
+            await websocket.close(code=1008, reason="Unauthorized: Invalid authorization format")
+            return
+            
+    except Exception as e:
+        logging.error(f"WebSocket authentication error: {e}")
+        await websocket.close(code=1008, reason="Authentication error")
+        return
+
     await websocket.accept()
 
     creds = ssh_manager.get_credentials(node_ip)
@@ -611,47 +643,108 @@ async def websocket_ssh_endpoint(websocket: WebSocket, node_ip: str):
     try:
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(node_ip, username=creds['username'], password=creds['password'], timeout=10)
+        
+        # Set more reasonable timeouts and connection parameters
+        client.connect(
+            node_ip, 
+            username=creds['username'], 
+            password=creds['password'], 
+            timeout=15,
+            auth_timeout=10,
+            banner_timeout=10
+        )
 
-        channel = client.invoke_shell(term='xterm') # Use a common terminal type
+        channel = client.invoke_shell(term='xterm-256color')
+        channel.settimeout(0.1)  # Non-blocking reads
 
         async def read_from_channel():
-            while not channel.exit_status_ready():
-                if channel.recv_ready():
-                    data = channel.recv(4096)
-                    if data:
-                        await websocket.send_text(data.decode('utf-8', 'ignore'))
-                await asyncio.sleep(0.01)
-            
-            # When the channel is closed, close the websocket
-            await websocket.close()
-            client.close()
+            try:
+                while not channel.exit_status_ready():
+                    try:
+                        if channel.recv_ready():
+                            data = channel.recv(4096)
+                            if data:
+                                await websocket.send_text(data.decode('utf-8', 'ignore'))
+                    except socket.timeout:
+                        pass  # Expected for non-blocking operation
+                    except Exception as e:
+                        logging.error(f"Error reading from SSH channel: {e}")
+                        break
+                    await asyncio.sleep(0.01)
+                
+                # Send final data if any
+                try:
+                    if channel.recv_ready():
+                        data = channel.recv(4096)
+                        if data:
+                            await websocket.send_text(data.decode('utf-8', 'ignore'))
+                except:
+                    pass
+                    
+                # Close the connection
+                await websocket.close()
+            except Exception as e:
+                logging.error(f"Error in read_from_channel: {e}")
+            finally:
+                try:
+                    client.close()
+                except:
+                    pass
 
 
         async def write_to_channel():
             try:
                 while True:
                     data = await websocket.receive_text()
-                    channel.send(data)
+                    if channel and not channel.closed:
+                        channel.send(data)
+                    else:
+                        break
             except WebSocketDisconnect:
-                print("WebSocket disconnected.")
-                client.close()
+                logging.info("WebSocket disconnected.")
+            except Exception as e:
+                logging.error(f"Error in write_to_channel: {e}")
+            finally:
+                try:
+                    if client:
+                        client.close()
+                except:
+                    pass
 
-        # Run reader and writer tasks
+        # Run reader and writer tasks with proper cancellation
         reader_task = asyncio.create_task(read_from_channel())
         writer_task = asyncio.create_task(write_to_channel())
 
-        done, pending = await asyncio.wait(
-            [reader_task, writer_task],
-            return_when=asyncio.FIRST_COMPLETED,
-        )
+        try:
+            done, pending = await asyncio.wait(
+                [reader_task, writer_task],
+                return_when=asyncio.FIRST_COMPLETED,
+                timeout=3600  # 1 hour timeout
+            )
+        finally:
+            # Clean up tasks
+            for task in [reader_task, writer_task]:
+                if not task.done():
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
 
-        for task in pending:
-            task.cancel()
-
-
-    except Exception as e:
-        error_message = f"\r\nERRO: Falha ao conectar ou comunicar via SSH: {str(e)}\r\n"
+    except paramiko.AuthenticationException:
+        error_message = f"\r\nERRO: Falha na autenticação SSH para {node_ip}. Verifique as credenciais.\r\n"
         await websocket.send_text(error_message)
-        await websocket.close()
+        await websocket.close(code=1008)
+    except paramiko.SSHException as ssh_error:
+        error_message = f"\r\nERRO: Falha na conexão SSH: {str(ssh_error)}\r\n"
+        await websocket.send_text(error_message)
+        await websocket.close(code=1011)
+    except Exception as e:
+        error_message = f"\r\nERRO: Falha ao conectar via SSH: {str(e)}\r\n"
+        logging.error(f"SSH WebSocket error for {node_ip}: {e}")
+        try:
+            await websocket.send_text(error_message)
+            await websocket.close(code=1011)
+        except:
+            pass  # Connection might already be closed
 
