@@ -3,9 +3,10 @@ services:
     image: nginx:latest
     container_name: nodemon-proxy
     ports:
-      - "8000:80"
+      - "8080:443"
     volumes:
       - ./nginx.conf:/etc/nginx/nginx.conf
+      - ./nginx/certs:/etc/nginx/certs
     networks:
       - nodemon-net
     depends_on:
@@ -17,6 +18,8 @@ services:
     container_name: nodemon-backend
     env_file:
       - ./backend/.env
+    volumes:
+      - backend_data:/code
     networks:
       - nodemon-net
     depends_on:
@@ -52,6 +55,7 @@ services:
 
 volumes:
   postgres_data:
+  backend_data:
 
 networks:
   nodemon-net:

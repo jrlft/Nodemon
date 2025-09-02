@@ -1,5 +1,6 @@
-from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile
+from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile, WebSocket
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from starlette.websockets import WebSocketDisconnect
 from sqlalchemy.orm import Session
 from pydantic import BaseModel, ValidationError
 from typing import Optional, List
@@ -16,6 +17,8 @@ import logging
 import asyncio
 import aiohttp
 import smtplib
+import paramiko
+from . import ssh_manager
 from email.mime.text import MIMEText
 from contextlib import asynccontextmanager
 from dotenv import load_dotenv
@@ -565,3 +568,90 @@ def get_global_status(network: str):
         except requests.RequestException:
             return {"label": "Total de Nós na Rede", "value": "API Indisponível"}
     raise HTTPException(status_code=404, detail="Rede desconhecida")
+
+
+class SshCredentials(BaseModel):
+    username: str
+    password: str
+
+@app.post("/ssh/connect/{node_ip}", status_code=status.HTTP_200_OK, dependencies=[Depends(get_current_username)])
+def ssh_connect(node_ip: str, creds: SshCredentials):
+    """
+    Testa a conexão SSH e salva as credenciais se a conexão for bem-sucedida.
+    """
+    try:
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(node_ip, username=creds.username, password=creds.password, timeout=10)
+        client.close()
+
+        # Se a conexão for bem-sucedida, salva as credenciais
+        ssh_manager.save_credentials(node_ip, creds.username, creds.password)
+        return {"message": "Conexão SSH bem-sucedida e credenciais salvas."}
+    except paramiko.AuthenticationException:
+        raise HTTPException(status_code=401, detail="Falha na autenticação SSH.")
+    except paramiko.SSHException as e:
+        raise HTTPException(status_code=500, detail=f"Erro de SSH: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro inesperado: {e}")
+
+@app.websocket("/ws/ssh/{node_ip}")
+async def websocket_ssh_endpoint(websocket: WebSocket, node_ip: str):
+    """
+    Endpoint WebSocket para o terminal SSH interativo.
+    """
+    await websocket.accept()
+
+    creds = ssh_manager.get_credentials(node_ip)
+    if not creds:
+        await websocket.send_text(f"\r\nERRO: Credenciais para o node {node_ip} não encontradas. Por favor, configure-as primeiro.\r\n")
+        await websocket.close(code=1008) # Policy Violation
+        return
+
+    try:
+        client = paramiko.SSHClient()
+        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+        client.connect(node_ip, username=creds['username'], password=creds['password'], timeout=10)
+
+        channel = client.invoke_shell(term='xterm') # Use a common terminal type
+
+        async def read_from_channel():
+            while not channel.exit_status_ready():
+                if channel.recv_ready():
+                    data = channel.recv(4096)
+                    if data:
+                        await websocket.send_text(data.decode('utf-8', 'ignore'))
+                await asyncio.sleep(0.01)
+            
+            # When the channel is closed, close the websocket
+            await websocket.close()
+            client.close()
+
+
+        async def write_to_channel():
+            try:
+                while True:
+                    data = await websocket.receive_text()
+                    channel.send(data)
+            except WebSocketDisconnect:
+                print("WebSocket disconnected.")
+                client.close()
+
+        # Run reader and writer tasks
+        reader_task = asyncio.create_task(read_from_channel())
+        writer_task = asyncio.create_task(write_to_channel())
+
+        done, pending = await asyncio.wait(
+            [reader_task, writer_task],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        for task in pending:
+            task.cancel()
+
+
+    except Exception as e:
+        error_message = f"\r\nERRO: Falha ao conectar ou comunicar via SSH: {str(e)}\r\n"
+        await websocket.send_text(error_message)
+        await websocket.close()
+

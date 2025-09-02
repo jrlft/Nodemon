@@ -15,7 +15,7 @@ echo "🚀 Iniciando correção e configuração do NKN Health Monitor (v2)..."
 # 1. Instalar dependências do sistema
 echo "📦 Instalando dependências do sistema..."
 apt-get update -qq
-apt-get install -y python3 python3-pip python3-venv curl -qq >/dev/null
+apt-get install -y python3 python3-pip python3-venv curl -qq
 
 # 2. Criar diretórios necessários
 mkdir -p "${TARGET_DIR}/monitor_state"
@@ -28,8 +28,8 @@ python3 -m venv ${VENV_PATH}
 
 # 4. Instalar dependências Python no venv
 echo "📦 Instalando dependências Python (psutil, requests) no venv..."
-${VENV_PATH}/bin/pip install --upgrade pip >/dev/null
-${VENV_PATH}/bin/pip install psutil requests >/dev/null
+${VENV_PATH}/bin/pip install --upgrade pip
+${VENV_PATH}/bin/pip install psutil requests
 
 # 5. Verificar a instalação do 'requests'
 echo "🔍 Verificando a instalação da biblioteca 'requests'..."

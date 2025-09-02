@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import SshTerminal from './SshTerminal';
 
 const Icon = ({ path, className = "w-6 h-6" }) => ( <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className={className}><path strokeLinecap="round" strokeLinejoin="round" d={path} /></svg> );
 const StatusBadge = ({ status }) => {
@@ -205,6 +206,110 @@ const CSVImportModal = ({ isOpen, onClose, analysis, onImport, credentials }) =>
     );
 };
 
+const SshModal = ({ isOpen, onClose, node, credentials }) => {
+    const [sshCreds, setSshCreds] = useState({ username: '', password: '' });
+    const [isConnecting, setIsConnecting] = useState(false);
+    const [showTerminal, setShowTerminal] = useState(false);
+    const [errorMessage, setErrorMessage] = useState('');
+
+    const handleConnect = async (e) => {
+        e.preventDefault();
+        setIsConnecting(true);
+        setErrorMessage('');
+
+        try {
+            console.log("Connecting to SSH for IP:", node.ip_address);
+            console.log("Full URL:", `/api/ssh/connect/${node.ip_address}`);
+                        const response = await fetch(`/api/ssh/connect/${node.ip_address}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Authorization': credentials },
+                body: JSON.stringify(sshCreds)
+            });
+
+            if (!response.ok) {
+                const errorData = await response.json();
+                throw new Error(errorData.detail || 'Falha ao conectar.');
+            }
+
+            setShowTerminal(true);
+
+        } catch (error) {
+            setErrorMessage(error.message);
+        } finally {
+            setIsConnecting(false);
+        }
+    };
+
+    const handleDisconnect = () => {
+        setShowTerminal(false);
+        onClose();
+    };
+
+    useEffect(() => {
+        if (!isOpen) {
+            // Reset state when modal is closed
+            setShowTerminal(false);
+            setSshCreds({ username: '', password: '' });
+            setErrorMessage('');
+        }
+    }, [isOpen]);
+
+
+    if (!isOpen) return null;
+
+    return (
+        <div className="fixed inset-0 bg-black bg-opacity-70 flex justify-center items-center z-50">
+            <div className="bg-gray-800 rounded-lg shadow-xl w-full max-w-4xl h-[80vh] flex flex-col">
+                <div className="p-4 border-b border-gray-700 flex justify-between items-center">
+                    <h2 className="text-xl font-bold text-white">SSH Terminal - {node?.name} ({node?.ip_address})</h2>
+                    <button onClick={onClose} className="text-gray-400 hover:text-white">
+                        <Icon path="M6 18L18 6M6 6l12 12" className="w-6 h-6" />
+                    </button>
+                </div>
+
+                <div className="flex-grow p-4 overflow-hidden">
+                    {showTerminal ? (
+                        <SshTerminal nodeIp={node.ip_address} onDisconnect={handleDisconnect} />
+                    ) : (
+                        <div className="flex flex-col justify-center items-center h-full text-white">
+                            <form onSubmit={handleConnect} className="w-full max-w-sm space-y-4">
+                                <h3 className="text-lg font-semibold">Credenciais SSH</h3>
+                                <p className="text-sm text-gray-400">
+                                    Insira as credenciais para acessar este nó. Elas serão salvas de forma segura para futuros acessos.
+                                </p>
+                                <input
+                                    type="text"
+                                    placeholder="Usuário"
+                                    value={sshCreds.username}
+                                    onChange={(e) => setSshCreds(prev => ({ ...prev, username: e.target.value }))}
+                                    required
+                                    className="w-full bg-gray-700 text-white p-3 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                />
+                                <input
+                                    type="password"
+                                    placeholder="Senha"
+                                    value={sshCreds.password}
+                                    onChange={(e) => setSshCreds(prev => ({ ...prev, password: e.target.value }))}
+                                    required
+                                    className="w-full bg-gray-700 text-white p-3 rounded-md focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                                />
+                                {errorMessage && <p className="text-red-500 text-sm">{errorMessage}</p>}
+                                <button
+                                    type="submit"
+                                    disabled={isConnecting}
+                                    className="w-full py-3 bg-indigo-600 hover:bg-indigo-500 rounded-md text-white font-semibold disabled:opacity-50"
+                                >
+                                    {isConnecting ? 'Conectando...' : 'Conectar'}
+                                </button>
+                            </form>
+                        </div>
+                    )}
+                </div>
+            </div>
+        </div>
+    );
+};
+
 
 const Sidebar = ({ activeProject, setActiveProject, isSidebarOpen, setSidebarOpen }) => {
     const menuItems = [
@@ -250,6 +355,15 @@ const Dashboard = ({ project, credentials, setSidebarOpen }) => {
     const [searchQuery, setSearchQuery] = useState('');
     const [statusFilter, setStatusFilter] = useState('all');
     const [dashboardMessage, setDashboardMessage] = useState(null);
+    const [sshModalState, setSshModalState] = useState({ isOpen: false, node: null });
+
+    const handleOpenSshModal = (node) => {
+        setSshModalState({ isOpen: true, node: node });
+    };
+
+    const handleCloseSshModal = () => {
+        setSshModalState({ isOpen: false, node: null });
+    };
 
     const fetchNodes = useCallback(async () => {
         setLoading(true);
@@ -415,6 +529,7 @@ const Dashboard = ({ project, credentials, setSidebarOpen }) => {
         <main className="flex-1 p-4 sm:p-8 bg-gray-800 text-gray-100 overflow-y-auto">
             <NodeModal isOpen={isNodeModalOpen} onClose={handleCloseNodeModal} onNodeSaved={handleNodeSaved} project={project} credentials={credentials} nodeToEdit={nodeToEdit} />
             <CSVImportModal isOpen={isImportModalOpen} onClose={() => setImportModalOpen(false)} analysis={importAnalysis} onImport={handleImportFinished} credentials={credentials} />
+            <SshModal isOpen={sshModalState.isOpen} onClose={handleCloseSshModal} node={sshModalState.node} credentials={credentials} />
 
             {dashboardMessage && (
                 <div className="bg-green-500/20 text-green-300 p-4 rounded-lg mb-6 flex justify-between items-center">
@@ -529,6 +644,7 @@ const Dashboard = ({ project, credentials, setSidebarOpen }) => {
                             </div>
                             <div className="flex justify-end items-center space-x-2 pt-2">
                                 <input type="checkbox" checked={selectedNodes.includes(node.id)} onChange={() => handleSelectNode(node.id)} className="w-4 h-4 text-indigo-600 bg-gray-700 border-gray-600 rounded focus:ring-indigo-500" />
+                                <button onClick={() => handleOpenSshModal(node)} className="font-medium text-blue-400 hover:underline"><Icon path="M6.75 7.5h10.5v7.5h-10.5v-7.5z M2.25 7.5h.01M2.25 10.5h.01M2.25 13.5h.01M21.75 7.5h-.01M21.75 10.5h-.01M21.75 13.5h-.01" className="w-5 h-5" /></button>
                                 <button onClick={() => handleOpenNodeModal(node)} className="font-medium text-indigo-400 hover:underline"><Icon path="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" className="w-5 h-5" /></button>
                                 <button onClick={() => handleDeleteNode(node.id)} className="font-medium text-red-500 hover:underline"><Icon path="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" className="w-5 h-5" /></button>
                             </div>
@@ -567,6 +683,7 @@ const Dashboard = ({ project, credentials, setSidebarOpen }) => {
                                     <td className="px-6 py-4 text-right hidden md:table-cell">{new Date(node.lastUpdate).toLocaleString()}</td>
                                     <td className="px-6 py-4 text-center">
                                         <div className="flex items-center justify-center space-x-2">
+                                            <button onClick={() => handleOpenSshModal(node)} className="font-medium text-blue-400 hover:underline"><Icon path="M6.75 7.5h10.5v7.5h-10.5v-7.5z M2.25 7.5h.01M2.25 10.5h.01M2.25 13.5h.01M21.75 7.5h-.01M21.75 10.5h-.01M21.75 13.5h-.01" className="w-5 h-5" /></button>
                                             <button onClick={() => handleOpenNodeModal(node)} className="font-medium text-indigo-400 hover:underline"><Icon path="M16.862 4.487l1.687-1.688a1.875 1.875 0 112.652 2.652L10.582 16.07a4.5 4.5 0 01-1.897 1.13L6 18l.8-2.685a4.5 4.5 0 011.13-1.897l8.932-8.931zm0 0L19.5 7.125M18 14v4.75A2.25 2.25 0 0115.75 21H5.25A2.25 2.25 0 013 18.75V8.25A2.25 2.25 0 015.25 6H10" className="w-5 h-5" /></button>
                                             <button onClick={() => handleDeleteNode(node.id)} className="font-medium text-red-500 hover:underline"><Icon path="M14.74 9l-.346 9m-4.788 0L9.26 9m9.968-3.21c.342.052.682.107 1.022.166m-1.022-.165L18.16 19.673a2.25 2.25 0 01-2.244 2.077H8.084a2.25 2.25 0 01-2.244-2.077L4.772 5.79m14.456 0a48.108 48.108 0 00-3.478-.397m-12 .562c.34-.059.68-.114 1.022-.165m0 0a48.11 48.11 0 013.478-.397m7.5 0v-.916c0-1.18-.91-2.164-2.09-2.201a51.964 51.964 0 00-3.32 0c-1.18.037-2.09 1.022-2.09 2.201v.916m7.5 0a48.667 48.667 0 00-7.5 0" className="w-5 h-5" /></button>
                                         </div>

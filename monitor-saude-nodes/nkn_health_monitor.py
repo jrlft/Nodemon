@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 """
-NKN Node Health Monitor - v5.6 Unificado
+NKN Node Health Monitor - v5.7 Unificado
 ------------------------------------
-- Implantação das Propostas 1 e 2 e da sugestão do usuário:
-  - Adicionada verificação ativa de portas 30001 e 30002 com alerta de notificação.
-  - Adicionado alerta de notificação proativo para 'Local node has no inbound neighbor'.
-  - Adicionada lógica para detectar falha persistente de crescimento do ChainDB após reinicialização,
-    com um alerta especial para intervenção manual.
+- Correção da URL do portchecker para .com
+- Melhoria no log de erros de email para incluir detalhes da exceção
+- Adicionado cooldown de 2 horas para alertas de performance de disco
 """
 
 import os
@@ -70,6 +68,7 @@ def load_state():
         "high_mem_since": None,
         "rpc_unreachable_since": None,
         "restarted_due_to_db_stall_at": None,
+        "last_io_performance_alert_at": 0,
     }
 
 def save_state(state):
@@ -151,7 +150,6 @@ def check_error_frequency(ip, time_window_hours=24, error_threshold=5):
     return None
 
 
-
 def send_email(subject, body):
     if not all([hasattr(config, 'SMTP_SERVER'), hasattr(config, 'SMTP_PORT'), config.EMAIL_USER, hasattr(config, 'EMAIL_PASS'), config.DESTINATION_EMAIL]):
         log_message("[WARN] Pulando envio de email: Configuracoes de SMTP incompletas")
@@ -161,13 +159,23 @@ def send_email(subject, body):
         msg["Subject"] = subject
         msg["From"] = config.EMAIL_USER
         msg["To"] = config.DESTINATION_EMAIL
-        with smtplib.SMTP(config.SMTP_SERVER, config.SMTP_PORT) as server:
+        with smtplib.SMTP(config.SMTP_SERVER, config.SMTP_PORT, timeout=20) as server:
             server.starttls()
             server.login(config.EMAIL_USER, config.EMAIL_PASS)
             server.sendmail(config.EMAIL_USER, config.DESTINATION_EMAIL, msg.as_string())
         log_message("Email de alerta enviado com sucesso.")
+    except smtplib.SMTPAuthenticationError as e:
+        log_message(f"[EMAIL ERROR] Falha na autenticação SMTP: {e}. Verifique seu email e senha.")
+    except smtplib.SMTPServerDisconnected as e:
+        log_message(f"[EMAIL ERROR] O servidor SMTP desconectou inesperadamente: {e}.")
+    except smtplib.SMTPConnectError as e:
+        log_message(f"[EMAIL ERROR] Não foi possível conectar ao servidor SMTP: {e}. Verifique o endereço e a porta do servidor.")
+    except smtplib.SMTPRecipientsRefused as e:
+        log_message(f"[EMAIL ERROR] O servidor recusou os destinatários: {e}.")
+    except smtplib.SMTPSenderRefused as e:
+        log_message(f"[EMAIL ERROR] O servidor recusou o remetente: {e}.")
     except Exception as e:
-        log_message(f"[EMAIL ERROR] {e}")
+        log_message(f"[EMAIL ERROR] Um erro inesperado ocorreu: {type(e).__name__} - {e}")
 
 def run_command(cmd):
     try:
@@ -193,7 +201,7 @@ def check_public_ports(public_ip):
     log_message(f"Verificando portas públicas em {public_ip}...")
     for port in [30001, 30002]:
         try:
-            url = f"https://api.portchecker.co/v2/check?port={port}&ip={public_ip}"
+            url = f"https://api.portchecker.com/v2/check?port={port}&ip={public_ip}"
             response = requests.get(url, timeout=10)
             if response.status_code == 200:
                 data = response.json()
@@ -357,54 +365,62 @@ def check_resource_usage(state):
     return [] # Placeholder
 
 
-def check_io_performance(test_file_path="/opt/nkn-monitor/io_test.tmp", block_size="1M", count=256, speed_threshold_mbps=50):
+def check_io_performance(state, node_ip, test_file_path="/opt/nkn-monitor/io_test.tmp", block_size="1M", count=256, speed_threshold_mbps=50):
     """
-    Verifica a performance de escrita do disco usando dd e retorna um alerta se estiver abaixo do limiar.
+    Verifica a performance de escrita do disco usando dd e envia um alerta por email se estiver abaixo do limiar,
+    respeitando um cooldown de 6 horas. Este alerta não é registrado como um erro crítico.
     """
-    alerts = []
+    now = time.time()
+    
     # Garante que o arquivo de teste não exista antes de começar
     if os.path.exists(test_file_path):
         os.remove(test_file_path)
 
-    # Comando dd para testar a velocidade de escrita
-    # Usamos fdatasync para garantir que os dados sejam escritos no disco
     cmd = f"dd if=/dev/zero of={test_file_path} bs={block_size} count={count} conv=fdatasync"
-    
     log_message(f"Executando teste de performance de I/O com: {cmd}")
     
-    # dd escreve a performance no stderr
     try:
         result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=120)
         stderr_output = result.stderr
         
-        # Limpa o arquivo de teste em qualquer caso
         if os.path.exists(test_file_path):
             os.remove(test_file_path)
 
-        # Procura pela velocidade de escrita na saída
         match = re.search(r"(\d+(\.\d+)?)\s+(MB/s|GB/s)", stderr_output)
         if match:
             speed = float(match.group(1))
             unit = match.group(3)
             
-            # Converte para MB/s se necessário
             if unit == "GB/s":
                 speed *= 1024
 
             log_message(f"Velocidade de escrita do disco detectada: {speed:.2f} MB/s")
 
             if speed < speed_threshold_mbps:
-                alerts.append(
-                    f"ALERTA DE PERFORMANCE: A velocidade de escrita do disco está muito baixa ({speed:.2f} MB/s), "
-                    f"abaixo do limiar de {speed_threshold_mbps} MB/s. "
-                    f"Isso pode causar problemas de sincronização e instabilidade. Verifique a saúde do SSD no provedor."
-                )
+                last_alert_time = state.get('last_io_performance_alert_at', 0)
+                if now - last_alert_time > 6 * 3600:  # Cooldown de 6 horas
+                    subject = f"[NKN-Monitor] AVISO de Performance de Disco no node {node_ip}"
+                    body = (
+                        f"ALERTA DE PERFORMANCE: A velocidade de escrita do disco está muito baixa ({speed:.2f} MB/s), "
+                        f"abaixo do limiar de {speed_threshold_mbps} MB/s. "
+                        f"Isso pode causar problemas de sincronização e instabilidade. Verifique a saúde do SSD no provedor."
+
+"
+                        f"Este é um aviso e não causará uma reinicialização do nó. O próximo aviso para este problema será enviado em 6 horas."
+"
+                    )
+                    send_email(subject, body)
+                    state['last_io_performance_alert_at'] = now
+                else:
+                    log_message("Alerta de performance de I/O em cooldown. Nenhuma ação tomada.")
         else:
             log_message("[WARN] Não foi possível determinar a velocidade de escrita do disco a partir da saída do dd.")
 
     except subprocess.TimeoutExpired:
-        alerts.append("ALERTA DE PERFORMANCE: O teste de escrita do disco (dd) demorou mais de 2 minutos para ser concluído. O disco está extremamente lento.")
-        # Tenta limpar o arquivo de teste
+        subject = f"[NKN-Monitor] AVISO de Performance de Disco no node {node_ip}"
+        body = "ALERTA DE PERFORMANCE: O teste de escrita do disco (dd) demorou mais de 2 minutos para ser concluído. O disco está extremamente lento."
+"
+        send_email(subject, body)
         if os.path.exists(test_file_path):
             os.remove(test_file_path)
     except Exception as e:
@@ -412,7 +428,7 @@ def check_io_performance(test_file_path="/opt/nkn-monitor/io_test.tmp", block_si
         if os.path.exists(test_file_path):
             os.remove(test_file_path)
             
-    return alerts
+    return None  # Retorna None para não ser adicionado aos alertas gerais
 
 
 # --- Funcao Principal ---
@@ -444,9 +460,7 @@ def main():
         restart_alerts.append(exit_msg)
 
     # 3. Checagens de saúde (RPC, Sincronização, DB)
-    # Só executa se não houver um erro fatal óbvio nos logs (como panic)
     if not any(p in str(log_restarts) for p in ["panic", "fatal"]):
-        # Passa o estado do nó já coletado para evitar chamadas duplicadas
         health_alerts, trigger_db_stall_restart = run_health_checks(state, node_state_info)
         if health_alerts:
             restart_alerts.extend(health_alerts)
@@ -454,7 +468,6 @@ def main():
                 state['restarted_due_to_db_stall_at'] = time.time()
 
     # --- ANÁLISE DE CAUSA RAIZ ---
-    # Agora que temos os alertas primários, investigamos a causa raiz se necessário
     should_investigate = any(
         "exit" in alert.lower() or 
         "exited" in alert.lower() or
@@ -469,7 +482,7 @@ def main():
         notification_alerts.extend(system_log_findings)
 
     # --- CHECAGENS SECUNDÁRIAS (NOTIFICAÇÃO) ---
-    # 4. Falha persistente de DB Stall (após uma reinicialização anterior)
+    # 4. Falha persistente de DB Stall
     stall_timestamp = state.get('restarted_due_to_db_stall_at')
     if stall_timestamp and (time.time() - stall_timestamp < 30 * 60):
         db_size = get_chaindb_size()
@@ -482,7 +495,7 @@ def main():
 
     # 6. Recursos e I/O
     notification_alerts.extend(check_resource_usage(state))
-    notification_alerts.extend(check_io_performance())
+    check_io_performance(state, node_ip)
 
     # --- LÓGICA DE ALERTA E AÇÃO ---
     all_alerts = restart_alerts + notification_alerts

@@ -13,7 +13,7 @@ echo "### Backing up database..."
 docker run --rm -v nodes-monitor_postgres_data:/data -v /tmp:/backup ubuntu tar cvf /backup/postgres_backup.tar /data
 
 echo "### Tearing down environment..."
-docker compose down -v
+docker compose down
 
 echo "### Rebuilding and starting services..."
 docker compose up --build -d
