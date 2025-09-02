@@ -14,18 +14,23 @@ const SshTerminal = ({ nodeIp, onDisconnect, credentials }) => {
     const getWebSocketUrl = () => {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const host = window.location.host;
-        // Add credentials as query parameter for WebSocket authentication
-        const authParam = credentials ? `?authorization=${encodeURIComponent(credentials)}` : '';
-        return `${protocol}//${host}/ws/ssh/${nodeIp}${authParam}`;
+        // Remove query parameter authentication for now
+        return `${protocol}//${host}/ws/ssh/${nodeIp}`;
     };
 
     const { sendMessage, lastMessage, readyState } = useWebSocket(
         getWebSocketUrl(),
         {
             onOpen: () => {
-                console.log('WebSocket connection established');
-                setIsConnecting(false);
-                setConnectionError(null);
+                console.log('WebSocket connection established, sending auth...');
+                // Send authentication immediately after connection
+                if (credentials) {
+                    const authMessage = JSON.stringify({
+                        type: 'auth',
+                        credentials: credentials
+                    });
+                    sendMessage(authMessage);
+                }
             },
             onClose: (event) => {
                 console.log('WebSocket connection closed', event);
@@ -89,7 +94,13 @@ const SshTerminal = ({ nodeIp, onDisconnect, credentials }) => {
 
     useEffect(() => {
         if (lastMessage !== null && xtermRef.current) {
-            xtermRef.current.write(lastMessage.data);
+            const data = lastMessage.data;
+            // Check if this is an authentication success indicator
+            if (data.includes('SSH') && !data.includes('ERRO')) {
+                setIsConnecting(false);
+                setConnectionError(null);
+            }
+            xtermRef.current.write(data);
         }
     }, [lastMessage]);
 

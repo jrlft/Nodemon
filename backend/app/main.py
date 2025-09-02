@@ -19,6 +19,7 @@ import aiohttp
 import smtplib
 import paramiko
 import socket
+import json
 from . import ssh_manager
 from email.mime.text import MIMEText
 from contextlib import asynccontextmanager
@@ -601,46 +602,78 @@ async def websocket_ssh_endpoint(websocket: WebSocket, node_ip: str):
     """
     Endpoint WebSocket para o terminal SSH interativo.
     """
-    # Check authorization from query parameters
+    logging.info(f"WebSocket connection attempt for node: {node_ip}")
+    
+    await websocket.accept()
+    logging.info(f"WebSocket connection accepted for node: {node_ip}")
+    
+    # Wait for authentication message
     try:
-        # Get authorization from query parameters
-        auth_header = websocket.query_params.get('authorization')
+        auth_timeout = 10  # 10 seconds timeout for auth
+        auth_message = await asyncio.wait_for(websocket.receive_text(), timeout=auth_timeout)
         
-        # Basic authentication validation
-        if not auth_header or not auth_header.startswith('Basic '):
-            await websocket.close(code=1008, reason="Unauthorized: Missing authentication")
+        try:
+            auth_data = json.loads(auth_message)
+            if auth_data.get('type') != 'auth':
+                raise ValueError("Invalid auth message type")
+                
+            credentials = auth_data.get('credentials')
+            if not credentials or not credentials.startswith('Basic '):
+                raise ValueError("Missing or invalid credentials")
+                
+        except (json.JSONDecodeError, ValueError) as e:
+            logging.error(f"WebSocket auth message parsing error: {e}")
+            await websocket.send_text(f"\r\nERRO: Formato de autenticação inválido\r\n")
+            await websocket.close(code=1008)
             return
             
         # Validate credentials
         import base64
         try:
-            encoded_credentials = auth_header.split('Basic ')[1]
+            encoded_credentials = credentials.split('Basic ')[1]
             decoded_credentials = base64.b64decode(encoded_credentials).decode('utf-8')
             username, password = decoded_credentials.split(':', 1)
             
             # Validate against admin credentials
             if not (secrets.compare_digest(username, ADMIN_USERNAME) and 
                    secrets.compare_digest(password, ADMIN_PASSWORD)):
-                await websocket.close(code=1008, reason="Unauthorized: Invalid credentials")
+                logging.error(f"WebSocket unauthorized: Invalid credentials for user {username}")
+                await websocket.send_text(f"\r\nERRO: Credenciais inválidas\r\n")
+                await websocket.close(code=1008)
                 return
-        except Exception:
-            await websocket.close(code=1008, reason="Unauthorized: Invalid authorization format")
+                
+            logging.info(f"WebSocket authentication successful for user: {username}")
+        except Exception as e:
+            logging.error(f"WebSocket credential validation error: {e}")
+            await websocket.send_text(f"\r\nERRO: Falha na validação de credenciais\r\n")
+            await websocket.close(code=1008)
             return
             
+    except asyncio.TimeoutError:
+        logging.error(f"WebSocket authentication timeout for node: {node_ip}")
+        await websocket.send_text(f"\r\nERRO: Timeout de autenticação\r\n")
+        await websocket.close(code=1008)
+        return
     except Exception as e:
         logging.error(f"WebSocket authentication error: {e}")
-        await websocket.close(code=1008, reason="Authentication error")
+        await websocket.send_text(f"\r\nERRO: Falha na autenticação\r\n")
+        await websocket.close(code=1008)
         return
 
-    await websocket.accept()
-
+    # Authentication successful, proceed with SSH connection
     creds = ssh_manager.get_credentials(node_ip)
     if not creds:
-        await websocket.send_text(f"\r\nERRO: Credenciais para o node {node_ip} não encontradas. Por favor, configure-as primeiro.\r\n")
-        await websocket.close(code=1008) # Policy Violation
+        error_msg = f"\r\nERRO: Credenciais para o node {node_ip} não encontradas. Por favor, configure-as primeiro.\r\n"
+        logging.error(f"SSH credentials not found for node: {node_ip}")
+        await websocket.send_text(error_msg)
+        await websocket.close(code=1008)
         return
+        
+    logging.info(f"SSH credentials found for node: {node_ip}, attempting connection...")
 
     try:
+        logging.info(f"Attempting SSH connection to {node_ip} with username: {creds['username']}")
+        
         client = paramiko.SSHClient()
         client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
         
@@ -653,9 +686,13 @@ async def websocket_ssh_endpoint(websocket: WebSocket, node_ip: str):
             auth_timeout=10,
             banner_timeout=10
         )
+        
+        logging.info(f"SSH connection successful to {node_ip}")
 
         channel = client.invoke_shell(term='xterm-256color')
         channel.settimeout(0.1)  # Non-blocking reads
+        
+        logging.info(f"SSH shell invoked for {node_ip}, starting data relay...")
 
         async def read_from_channel():
             try:
@@ -733,12 +770,20 @@ async def websocket_ssh_endpoint(websocket: WebSocket, node_ip: str):
 
     except paramiko.AuthenticationException:
         error_message = f"\r\nERRO: Falha na autenticação SSH para {node_ip}. Verifique as credenciais.\r\n"
-        await websocket.send_text(error_message)
-        await websocket.close(code=1008)
+        logging.error(f"SSH authentication failed for {node_ip}")
+        try:
+            await websocket.send_text(error_message)
+            await websocket.close(code=1008)
+        except:
+            pass
     except paramiko.SSHException as ssh_error:
         error_message = f"\r\nERRO: Falha na conexão SSH: {str(ssh_error)}\r\n"
-        await websocket.send_text(error_message)
-        await websocket.close(code=1011)
+        logging.error(f"SSH connection failed for {node_ip}: {ssh_error}")
+        try:
+            await websocket.send_text(error_message)
+            await websocket.close(code=1011)
+        except:
+            pass
     except Exception as e:
         error_message = f"\r\nERRO: Falha ao conectar via SSH: {str(e)}\r\n"
         logging.error(f"SSH WebSocket error for {node_ip}: {e}")

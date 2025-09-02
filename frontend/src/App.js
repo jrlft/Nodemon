@@ -220,7 +220,8 @@ const SshModal = ({ isOpen, onClose, node, credentials }) => {
         try {
             console.log("Connecting to SSH for IP:", node.ip_address);
             console.log("Full URL:", `/api/ssh/connect/${node.ip_address}`);
-                        const response = await fetch(`/api/ssh/connect/${node.ip_address}`, {
+            
+            const response = await fetch(`/api/ssh/connect/${node.ip_address}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'Authorization': credentials },
                 body: JSON.stringify(sshCreds)
@@ -231,10 +232,13 @@ const SshModal = ({ isOpen, onClose, node, credentials }) => {
                 throw new Error(errorData.detail || 'Falha ao conectar.');
             }
 
-            // Wait a moment for credentials to be saved before opening terminal
+            const result = await response.json();
+            console.log('SSH credentials saved:', result.message);
+            
+            // Wait a moment for credentials to be saved, then open terminal
             setTimeout(() => {
                 setShowTerminal(true);
-            }, 500);
+            }, 1000);
 
         } catch (error) {
             console.error('SSH connection error:', error);
