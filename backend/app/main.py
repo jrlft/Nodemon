@@ -597,6 +597,11 @@ def ssh_connect(node_ip: str, creds: SshCredentials):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Erro inesperado: {e}")
 
+@app.get("/debug/websocket-test")
+async def websocket_test():
+    """Debug endpoint to test if WebSocket support is available"""
+    return {"message": "WebSocket support available", "status": "ok"}
+
 @app.websocket("/ws/ssh/{node_ip}")
 async def websocket_ssh_endpoint(websocket: WebSocket, node_ip: str):
     """
